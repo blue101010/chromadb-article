@@ -1,0 +1,212 @@
+#!/bin/bash
+# spip - Secure pip wrapper
+# Place this in your PATH (e.g., /usr/local/bin/spip or ~/bin/spip)
+
+set -e
+
+# Get script directory without using dirname (for Git Bash on Windows compatibility)
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
+PYTHON_CHECKER="${SCRIPT_DIR}/spip_checker.py"
+
+# Prefer activated virtualenv's python when available, otherwise prefer `python` then `python3`.
+PYTHON_CMD=
+if [[ -n "$VIRTUAL_ENV" ]]; then
+    # Windows venv path: prefer Scripts/python, then Scripts/python.exe, then unix-style bin/python
+    if [[ -x "$VIRTUAL_ENV/Scripts/python" ]]; then
+        PYTHON_CMD="$VIRTUAL_ENV/Scripts/python"
+    elif [[ -x "$VIRTUAL_ENV/Scripts/python.exe" ]]; then
+        PYTHON_CMD="$VIRTUAL_ENV/Scripts/python.exe"
+    elif [[ -x "$VIRTUAL_ENV/bin/python" ]]; then
+        PYTHON_CMD="$VIRTUAL_ENV/bin/python"
+    fi
+fi
+if [[ -z "$PYTHON_CMD" ]]; then
+    if command -v python >/dev/null 2>&1; then
+        PYTHON_CMD=python
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON_CMD=python3
+    else
+        echo -e "${RED}Error: python is required but not found.${NC}"
+        exit 1
+    fi
+fi
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+print_banner() {
+    echo -e "${BLUE}"
+    echo "╔═══════════════════════════════════════════════════╗"
+    echo "║       spip - Pip Installer with security features ║"
+    echo "╚═══════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+print_usage() {
+    echo "Usage: spip <command> [options] [packages]"
+    echo ""
+    echo "Commands:"
+    echo "  install <package>    Install package with security checks"
+    echo "  check <package>      Run deep security checks (deps + hashes)"
+    echo "  checkfast <package>  Run metadata-only checks (age, releases, stars)"
+    echo "  audit                Audit currently installed packages"
+    echo "  --help, -h           Show this help message"
+    echo ""
+    echo "Options:"
+    echo "  --skip-checks        Skip security checks (not recommended)"
+    echo "  --min-downloads N    Minimum download threshold (default: 1000)"
+    echo "  --min-age-days N     Minimum package age in days (default: 30)"
+    echo "  --yes, -y            Auto-confirm installation prompts"
+    echo ""
+    echo "Examples:"
+    echo "  spip install requests"
+    echo "  spip install chromadb --min-downloads 5000"
+    echo "  spip check numpy"
+    echo "  spip checkfast numpy"
+    echo "  spip audit"
+}
+
+check_dependencies() {
+    if ! command -v "$PYTHON_CMD" &> /dev/null; then
+        echo -e "${RED}Error: $PYTHON_CMD is required but not installed.${NC}"
+        exit 1
+    fi
+
+    if [[ ! -f "$PYTHON_CHECKER" ]]; then
+        echo -e "${RED}Error: spip_checker.py not found at ${PYTHON_CHECKER}${NC}"
+        echo "Please ensure spip_checker.py is in the same directory as this script."
+        exit 1
+    fi
+}
+
+run_security_check() {
+    local package="$1"
+    shift
+    "$PYTHON_CMD" "$PYTHON_CHECKER" "$package" "$@"
+    return $?
+}
+
+run_audit() {
+    echo -e "${BLUE}Auditing installed packages...${NC}"
+    "$PYTHON_CMD" "$PYTHON_CHECKER" --audit
+    return $?
+}
+
+main() {
+    if [[ $# -eq 0 ]] || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
+        print_banner
+        print_usage
+        exit 0
+    fi
+
+    check_dependencies
+
+    local command="$1"
+    shift
+
+    case "$command" in
+        install)
+            if [[ $# -eq 0 ]]; then
+                echo -e "${RED}Error: No package specified${NC}"
+                print_usage
+                exit 1
+            fi
+            
+            print_banner
+            
+            local packages=()
+            local extra_args=()
+            local skip_checks=false
+            local auto_yes=false
+            
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --skip-checks)
+                        skip_checks=true
+                        shift
+                        ;;
+                    --yes|-y)
+                        auto_yes=true
+                        extra_args+=("--yes")
+                        shift
+                        ;;
+                    --min-downloads|--min-age-days)
+                        extra_args+=("$1" "$2")
+                        shift 2
+                        ;;
+                    -*)
+                        extra_args+=("$1")
+                        shift
+                        ;;
+                    *)
+                        packages+=("$1")
+                        shift
+                        ;;
+                esac
+            done
+            
+            for package in "${packages[@]}"; do
+                echo -e "${BLUE}═══════════════════════════════════════${NC}"
+                echo -e "${BLUE}Checking: ${package}${NC}"
+                echo -e "${BLUE}═══════════════════════════════════════${NC}"
+                
+                # Check if package is already installed
+                local package_name="${package%%[<>=!]*}"  # Extract package name without version specifiers
+                if pip show "$package_name" &>/dev/null; then
+                    local installed_version=$(pip show "$package_name" 2>/dev/null | grep "^Version:" | awk '{print $2}')
+                    echo -e "${YELLOW}⚠ Warning: Package '$package_name' is already installed (version: $installed_version)${NC}"
+                fi
+                
+                if [[ "$skip_checks" == true ]]; then
+                    echo -e "${YELLOW}⚠ Security checks skipped${NC}"
+                    pip install "$package"
+                else
+                    if run_security_check "$package" --install "${extra_args[@]}"; then
+                        echo -e "${GREEN}✓ Package installed successfully${NC}"
+                    else
+                        echo -e "${RED}✗ Installation aborted${NC}"
+                        exit 1
+                    fi
+                fi
+            done
+            ;;
+            
+        check)
+            if [[ $# -eq 0 ]]; then
+                echo -e "${RED}Error: No package specified${NC}"
+                exit 1
+            fi
+            print_banner
+            # invoke the Python checker with --check to enable dependency/hash analysis
+            # enable progress by default for `spip check`
+            "$PYTHON_CMD" "$PYTHON_CHECKER" --check --progress "$@"
+            ;;
+        checkfast)
+            if [[ $# -eq 0 ]]; then
+                echo -e "${RED}Error: No package specified${NC}"
+                exit 1
+            fi
+            print_banner
+            "$PYTHON_CMD" "$PYTHON_CHECKER" --checkfast "$@"
+            ;;
+            
+        audit)
+            print_banner
+            run_audit
+            ;;
+            
+        *)
+            echo -e "${RED}Unknown command: ${command}${NC}"
+            print_usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

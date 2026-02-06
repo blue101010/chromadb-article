@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# myvenv.sh - helper to create and activate a Python venv when sourced from Git Bash on Windows.
+
+set -euo pipefail
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    echo "myvenv must be sourced: source ./myvenv" >&2
+    exit 1
+fi
+
+FORCE=false
+ENV_DIR=".venv"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+
+# Parse arguments
+for arg in "$@"; do
+    if [[ "$arg" == "--force" ]]; then
+        FORCE=true
+    else
+        ENV_DIR="$arg"
+    fi
+done
+
+# If force flag is set and directory exists, remove it
+if [[ "$FORCE" == true ]] && [[ -d "$ENV_DIR" ]]; then
+    echo "Removing existing virtual environment '$ENV_DIR'..."
+    rm -rf "$ENV_DIR"
+fi
+
+if [[ ! -d "$ENV_DIR" ]]; then
+    echo "Creating virtual environment in '$ENV_DIR' using ${PYTHON_BIN}..."
+    "$PYTHON_BIN" -m venv "$ENV_DIR"
+fi
+
+ACTIVATE_PATH=""
+if [[ -f "$ENV_DIR/Scripts/activate" ]]; then
+    ACTIVATE_PATH="$ENV_DIR/Scripts/activate"
+elif [[ -f "$ENV_DIR/bin/activate" ]]; then
+    ACTIVATE_PATH="$ENV_DIR/bin/activate"
+else
+    echo "Could not find an activate script inside '$ENV_DIR'." >&2
+    return 1
+fi
+
+# shellcheck disable=SC1090
+source "$ACTIVATE_PATH"
+
+python -m pip install --upgrade pip >/dev/null 2>&1 || true
+
+echo "Virtual environment '$ENV_DIR' is active."
+
+
+alias spip='./spip'
