@@ -47,6 +47,12 @@ source "$ACTIVATE_PATH"
 
 python -m pip install --upgrade pip >/dev/null 2>&1 || true
 
+# Enhance prompt to clearly show venv status
+if [[ -n "$PS1" ]]; then
+    ENV_NAME=$(basename "$ENV_DIR")
+    export PS1="\[\033[1;32m\]($ENV_NAME)\[\033[0m\] $PS1"
+fi
+
 echo "Virtual environment '$ENV_DIR' is active."
 
 
