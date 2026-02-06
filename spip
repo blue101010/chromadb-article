@@ -167,7 +167,12 @@ main() {
                     echo -e "${YELLOW}⚠ Security checks skipped${NC}"
                     pip install "$package"
                 else
-                    if run_security_check "$package" --install "${extra_args[@]}"; then
+                    if [[ ${#extra_args[@]} -gt 0 ]]; then
+                        run_security_check "$package" --install "${extra_args[@]}"
+                    else
+                        run_security_check "$package" --install
+                    fi
+                    if [[ $? -eq 0 ]]; then
                         echo -e "${GREEN}✓ Package installed successfully${NC}"
                     else
                         echo -e "${RED}✗ Installation aborted${NC}"
