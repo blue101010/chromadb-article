@@ -7,7 +7,9 @@
       "Bash(chmod:*)",
       "Bash(\"C:\\\\DATA\\\\GIT\\\\chromadb\\\\.venv\\\\Scripts\\\\python.exe\" --version)",
       "Bash(source:*)",
-      "Bash(bash:*)"
+      "Bash(bash:*)",
+      "Bash(python:*)",
+      "Bash(pip install:*)"
     ]
   }
 }
