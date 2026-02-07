@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "Bash(C:/DATA/GIT/chromadb/.venv/Scripts/python:*)",
+      "Bash(tree:*)",
+      "Bash(chmod:*)",
+      "Bash(\"C:\\\\DATA\\\\GIT\\\\chromadb\\\\.venv\\\\Scripts\\\\python.exe\" --version)",
+      "Bash(source:*)",
+      "Bash(bash:*)"
+    ]
+  }
+}

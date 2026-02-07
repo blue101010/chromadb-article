@@ -5,7 +5,7 @@ client = chromadb.Client()
 
 collection = client.create_collection(name="policies")
 
-with open("policy.txt", "r", encoding="utf-8") as f:
+with open("policies.txt", "r", encoding="utf-8") as f:
     policies: list[str] = f.read().splitlines()
 
 
@@ -15,4 +15,4 @@ collection.add(
     metadatas=[{"line": line} for line in range(len(policies))],
 )
 
-collection.peek()
+print(collection.peek())

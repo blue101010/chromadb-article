@@ -10,16 +10,35 @@ fi
 
 FORCE=false
 ENV_DIR=".venv"
+PYTHON_VERSION=""
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 # Parse arguments
 for arg in "$@"; do
     if [[ "$arg" == "--force" ]]; then
         FORCE=true
+    elif [[ "$arg" =~ ^--version=(.+)$ ]]; then
+        PYTHON_VERSION="${BASH_REMATCH[1]}"
     else
         ENV_DIR="$arg"
     fi
 done
+
+# Set PYTHON_BIN based on --version flag
+if [[ -n "$PYTHON_VERSION" ]]; then
+    case "$PYTHON_VERSION" in
+        3.12)
+            PYTHON_BIN='C:\Python312\python.exe'
+            ;;
+        3.14)
+            PYTHON_BIN='C:\Python314\python.exe'
+            ;;
+        *)
+            echo "Error: Unsupported Python version '$PYTHON_VERSION'. Supported: 3.12, 3.14" >&2
+            return 1
+            ;;
+    esac
+fi
 
 # If force flag is set and directory exists, remove it
 if [[ "$FORCE" == true ]] && [[ -d "$ENV_DIR" ]]; then
@@ -30,6 +49,9 @@ fi
 if [[ ! -d "$ENV_DIR" ]]; then
     echo "Creating virtual environment in '$ENV_DIR' using ${PYTHON_BIN}..."
     "$PYTHON_BIN" -m venv "$ENV_DIR"
+    # Display the Python version used
+    CREATED_VERSION=$("$PYTHON_BIN" --version 2>&1 | awk '{print $2}')
+    echo "Virtual environment created with Python ${CREATED_VERSION}"
 fi
 
 ACTIVATE_PATH=""

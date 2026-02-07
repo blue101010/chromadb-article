@@ -1,0 +1,49 @@
+--- a/chromadb/config.py
++++ b/chromadb/config.py
+@@ -12,15 +12,41 @@
+ from typing_extensions import Literal
+ import platform
++import sys
+
+-in_pydantic_v2 = False
+-try:
+-    from pydantic import BaseSettings
+-except ImportError:
+-    in_pydantic_v2 = True
+-    from pydantic.v1 import BaseSettings
+-    from pydantic.v1 import validator
++in_pydantic_v1 = False
++in_pydantic_v2 = False
+
+-if not in_pydantic_v2:
+-    from pydantic import validator  # type: ignore # noqa
++try:
++    # Pydantic v2 with pydantic-settings installed (recommended path)
++    from pydantic_settings import BaseSettings
++    from pydantic import field_validator
++
++    in_pydantic_v2 = True
++
++    def validator(field: str, *, pre: bool = False, always: bool = False,
++                  allow_reuse: bool = False):
++        mode = "before" if pre else "after"
++        return field_validator(field, mode=mode)
++
++except ImportError:
++    try:
++        # Pydantic v1 standalone
++        from pydantic import BaseSettings
++        from pydantic import validator
++        in_pydantic_v1 = True
++    except ImportError:
++        # Pydantic v2 without pydantic-settings - v1 compat shim
++        if sys.version_info >= (3, 14):
++            raise ImportError(
++                "ChromaDB requires 'pydantic-settings' on Python 3.14+. "
++                "Install it with: pip install pydantic-settings>=2.0"
++            )
++        from pydantic.v1 import BaseSettings
++        from pydantic.v1 import validator
++        in_pydantic_v2 = True
+
+ # The thin client will have a flag to control which implementations to use
