@@ -1,0 +1,1376 @@
+\documentclass[preprint,12pt]{elsarticle}
+
+%% ── Packages ────────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc,angles, quotes}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{subcaption}
+\usepackage{float}
+
+%% ── Style des listings de code ──────────────────────────────────────────────
+\definecolor{codebg}{RGB}{248,248,248}
+\definecolor{codegreen}{RGB}{40,160,40}
+\definecolor{codegray}{RGB}{128,128,128}
+\definecolor{codepurple}{RGB}{140,60,180}
+\definecolor{codeblue}{RGB}{30,80,180}
+
+\lstdefinestyle{pythonstyle}{
+    language=Python,
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{codeblue}\bfseries,
+    stringstyle=\color{codegreen},
+    commentstyle=\color{codegray}\itshape,
+    numberstyle=\tiny\color{codegray},
+    numbers=left,
+    numbersep=8pt,
+    frame=single,
+    rulecolor=\color{codegray!40},
+    breaklines=true,
+    breakatwhitespace=false,
+    showstringspaces=false,
+    tabsize=4,
+    captionpos=b,
+    aboveskip=10pt,
+    belowskip=10pt,
+    morekeywords={as,with,True,False,None,self,cls},
+    literate={é}{{\'e}}1 {è}{{\`e}}1 {ê}{{\^e}}1
+             {à}{{\`a}}1 {ù}{{\`u}}1 {ô}{{\^o}}1
+             {î}{{\^i}}1 {ç}{{\c{c}}}1 {û}{{\^u}}1
+             {ë}{{\"e}}1 {ï}{{\"i}}1 {ü}{{\"u}}1
+}
+\lstset{style=pythonstyle}
+
+\lstdefinestyle{outputstyle}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\footnotesize,
+    frame=single,
+    rulecolor=\color{codegray!40},
+    breaklines=true,
+    numbers=none,
+    aboveskip=10pt,
+    belowskip=10pt,
+}
+
+% Hyperref setup for clickable references
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+    citecolor=blue,
+    pdftitle={Cartes Cognitives Floues},
+    pdfauthor={Auteur},
+}
+\usepackage{xurl}
+\journal{Revue de Soft Computing}
+
+\makeatletter
+\renewenvironment{abstract}{%
+  \global\setbox\absbox=\vbox\bgroup
+  \hsize=\textwidth
+  \normalfont
+  \noindent\textbf{Résumé}\par\vspace{0.5\baselineskip}
+}{%
+  \par\egroup
+}
+\makeatother
+\makeatletter
+
+\usepackage[french]{babel}
+\addto\captionsfrench{%
+  \def\keywordsname{\textbf{Mots-clés}}%
+}
+
+
+\begin{document}
+
+\begin{frontmatter}
+
+\title{ChromaDB par la pratique : comment une base de données vectorielle
+transforme du texte en embeddings recherchables}
+
+
+\author{Franck Jeannot}
+\address{Montréal, Canada, AC862,  Février 2025}
+
+\begin{abstract}
+Les bases de données vectorielles sont un pilier des pipelines modernes
+de génération augmentée par récupération (RAG), mais leur fonctionnement
+interne reste opaque pour de nombreux praticiens. Ce tutoriel décortique
+ChromaDB --- une base de données vectorielle open-source et embarquable
+--- depuis l'API Python jusqu'au moteur d'inférence ONNX qui convertit
+du texte brut en vecteurs de 384 dimensions. À partir d'un programme
+minimal de 18 lignes indexant 56 phrases de politiques commerciales,
+nous traçons chaque étape du pipeline : tokenisation, passe avant du
+transformeur, mean pooling, normalisation L2, indexation HNSW et
+recherche par distance cosinus. Chaque étape est illustrée par du code
+concret, des sorties intermédiaires et des définitions mathématiques,
+de sorte qu'un lecteur ayant des connaissances de base en Python puisse
+reproduire et étendre les expériences. Nous montrons également comment
+remplacer le modèle anglais par défaut par un encodeur de phrases
+multilingue (\texttt{paraphrase-multilingual-MiniLM-L12-v2}) pour
+indexer et interroger des documents en français, y compris la recherche
+interlingue où des requêtes en anglais retrouvent des résultats
+pertinents en français. Nous discutons enfin du correctif de
+compatibilité Python 3.14 nécessaire pour les versions actuelles de
+ChromaDB.
+\end{abstract}
+
+\begin{keyword}
+base de données vectorielle \sep embeddings \sep ChromaDB \sep HNSW \sep
+sentence-transformers \sep ONNX \sep RAG \sep similarité cosinus \sep
+embeddings multilingues \sep recherche interlingue
+\end{keyword}
+
+\end{frontmatter}
+
+%% ════════════════════════════════════════════════════════════════════════════
+\section{Introduction}
+\label{sec:intro}
+%% ════════════════════════════════════════════════════════════════════════════
+
+Les applications basées sur les grands modèles de langage (LLM) ont
+fréquemment besoin de retrouver des documents pertinents avant de
+générer une réponse, un patron connu sous le nom de \emph{génération
+augmentée par récupération} (RAG)~\cite{lewis2020rag}. L'étape de
+récupération nécessite une structure de données efficace capable, à
+partir d'une phrase de requête, de retourner les $k$ documents les plus
+sémantiquement similaires en temps sous-linéaire. Les \emph{bases de
+données vectorielles} remplissent ce rôle en stockant des
+représentations vectorielles de haute dimension du texte et en répondant
+à des requêtes de plus proches voisins.
+
+ChromaDB\footnote{\url{https://www.trychroma.com}} est une base de
+données vectorielle open-source et embarquable, écrite en Python et en
+Rust. Sa caractéristique distinctive pour les débutants est un pipeline
+d'embedding \emph{sans configuration} : un seul appel à
+\texttt{collection.add(documents=...)} tokenise automatiquement le
+texte, exécute un modèle transformeur, normalise les vecteurs résultants
+et les indexe, le tout sans que l'utilisateur ait à télécharger un
+modèle ou écrire du code de machine learning.
+
+Cet article répond à trois questions :
+\begin{enumerate}
+    \item Que se passe-t-il, étape par étape, quand ChromaDB convertit
+          une phrase en vecteur ?
+    \item Comment ces vecteurs sont-ils stockés et recherchés
+          efficacement ?
+    \item Comment écrire un programme RAG complet et fonctionnel ?
+\end{enumerate}
+
+\newpage
+\section{Notions préliminaires}
+\label{sec:background}
+%% ════════════════════════════════════════════════════════════════════════════
+
+\subsection{Embeddings de mots et de phrases}
+
+Un \emph{embedding} \footnote{\textit{embedding} En français : \emph{plongement} ou 
+\emph{représentation vectorielle}. Le terme anglais est couramment 
+utilisé dans la littérature technique.} est une application $f\colon \mathcal{T} \to
+\mathbb{R}^{d}$ qui envoie un texte de longueur variable $t \in
+\mathcal{T}$ vers un vecteur réel de dimension fixe $d$. 
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    scale=1.2,
+    vector/.style={-{Stealth[length=3mm]}, thick, line width=1.2pt}
+]
+
+% Origine
+\coordinate (O) at (0,0);
+\fill (O) circle (1.5pt) node[below left] {$O$};
+
+% Points de destination des vecteurs
+\coordinate (U) at (4,1);
+\coordinate (V) at (3,3);
+
+% Vecteur u
+\draw[vector, blue!70!black] (O) -- (U) node[right] {$\mathbf{u}$};
+
+% Vecteur v
+\draw[vector, red!70!black] (O) -- (V) node[above] {$\mathbf{v}$};
+
+% Angle entre u et v (syntaxe corrigée)
+\pic[draw, angle radius=1.2cm, 
+     "$\theta$", angle eccentricity=1.4] 
+     {angle = U--O--V};
+
+% Annotations
+\node[align=center, font=\small, text width=4cm] at (2, -1.2) {
+    Si $\theta$ petit $\Rightarrow$ $\cos(\theta) \approx 1$ \\
+    \textcolor{blue!70!black}{(textes similaires)}
+};
+
+\node[align=center, font=\small, text width=4cm] at (6.5, 2) {
+    Si $\theta = 90°$ $\Rightarrow$ $\cos(\theta) = 0$ \\
+    \textcolor{orange!80!black}{(textes indépendants)}
+};
+
+% Longueurs (normes)
+\draw[densely dashed, gray] (O) -- (U) 
+    node[midway, below, sloped, font=\scriptsize] 
+    {$\lVert\mathbf{u}\rVert$};
+\draw[densely dashed, gray] (O) -- (V) 
+    node[midway, above left, sloped, font=\scriptsize] 
+    {$\lVert\mathbf{v}\rVert$};
+
+\end{tikzpicture}
+
+\caption{Interprétation géométrique de la similarité cosinus : 
+$\cos(\theta)$ mesure l'angle entre deux vecteurs. Plus l'angle est 
+petit, plus $\cos(\theta)$ est proche de 1 (textes similaires). 
+Les longueurs $\lVert\mathbf{u}\rVert$ et $\lVert\mathbf{v}\rVert$ 
+au dénominateur normalisent le résultat pour que seule la direction 
+compte.}
+\label{fig:cosine_illustration}
+\end{figure}
+
+
+De bons embeddings placent les textes sémantiquement proches à faible distance
+et les textes dissemblables à grande distance, où « proche » est mesuré
+par une fonction de distance ou de similarité telle que la \textbf{similarité
+cosinus} :
+
+\begin{equation}
+\label{eq:cosine}
+\cos(\mathbf{u}, \mathbf{v})
+  = \frac{\mathbf{u} \cdot \mathbf{v}}
+         {\lVert\mathbf{u}\rVert \; \lVert\mathbf{v}\rVert}
+  = \frac{\displaystyle\sum_{i=1}^{d} u_i \, v_i}
+         {\sqrt{\displaystyle\sum_{i=1}^{d} u_i^2}\;\;
+          \sqrt{\displaystyle\sum_{i=1}^{d} v_i^2}}.
+\end{equation}
+
+\noindent
+Cette formule mesure l'angle entre deux vecteurs. Une valeur proche de $1$ signifie que les vecteurs pointent dans la même direction (textes très similaires), tandis qu'une valeur proche de $0$ indique des directions perpendiculaires (textes sans rapport). La normalisation par les longueurs $\lVert\mathbf{u}\rVert$ 
+et $\lVert\mathbf{v}\rVert$ garantit que seule la direction compte, 
+pas la magnitude. \newline
+\textit{Le numérateur ($\mathbf{u} \cdot \mathbf{v}$) 
+mesure à quel point les vecteurs vont dans la même direction. Le 
+dénominateur normalise ce résultat par les longueurs des vecteurs, de 
+sorte que des phrases longues et courtes ayant le même sens obtiennent 
+le même score de similarité.}
+
+ChromaDB stocke la \emph{distance cosinus}, définie comme $1 -
+\cos(\mathbf{u},\mathbf{v})$, de sorte que les valeurs plus petites
+indiquent une similarité plus élevée.
+
+\subsection{Encodeurs transformeurs et BERT}
+
+Le modèle \emph{all-MiniLM-L6-v2} utilisé par la fonction d'embedding
+par défaut de ChromaDB est un encodeur BERT
+distillé~\cite{wang2020minilm} avec 6 couches transformeur, 12 têtes
+d'attention et une taille cachée de 384. Il a été entraîné avec un
+objectif contrastif sur plus d'un milliard de paires de phrases pour
+produire des embeddings de phrases sémantiquement significatifs.
+
+Chaque couche transformeur applique de l'auto-attention multi-têtes%
+\footnote{\emph{Auto-attention} : mécanisme qui calcule, pour chaque 
+mot, une représentation pondérée de tous les autres mots de la phrase. 
+\emph{Multi-têtes} : ce calcul est effectué 12 fois en parallèle avec 
+des paramètres différents, capturant différents types de dépendances 
+linguistiques. \emph{Feed-forward} : réseau de neurones appliqué 
+indépendamment à chaque position pour transformer les représentations.} 
+suivie d'un réseau feed-forward :
+\begin{equation}
+\label{eq:attention}
+\mathrm{Attention}(Q,K,V) = \mathrm{softmax}\!\left(\frac{QK^{\top}}{\sqrt{d_k}}\right)V,
+\end{equation}
+où $d_k = 384/12 = 32$ est la dimension par tête. La sortie de la
+dernière couche est une matrice $H \in \mathbb{R}^{n \times 384}$, où
+$n$ est la longueur de la séquence.
+
+\subsection{Index HNSW}
+
+Hierarchical Navigable Small World (\textbf{HNSW})~\cite{malkov2018hnsw} est un
+algorithme de recherche approximative de plus proches voisins basé sur
+un graphe. Il construit un graphe multi-couches où :
+\begin{itemize}
+    \item La couche du bas contient tous les vecteurs.
+    \item Chaque couche supérieure est un sous-ensemble aléatoire de la
+          couche inférieure.
+    \item Les arêtes connectent chaque nœud à ses $M$ plus proches
+          voisins dans cette couche.
+\end{itemize}
+Une requête commence à la couche la plus haute et descend de manière
+gloutonne en affinant l'ensemble de candidats à chaque couche. Les
+paramètres clés sont $M$ (\texttt{max\_neighbors}),
+\texttt{ef\_construction} et \texttt{ef\_search}, tous configurés par
+défaut par ChromaDB (Tableau~\ref{tab:hnsw}).
+
+%% ════════════════════════════════════════════════════════════════════════════
+\section{Vue d'ensemble de l'architecture}
+\label{sec:architecture}
+%% ════════════════════════════════════════════════════════════════════════════
+
+La Figure~\ref{fig:pipeline} montre le flux de données complet depuis le
+texte brut jusqu'aux résultats de requête. Le pipeline se compose de
+cinq étapes, chacune détaillée en Section~\ref{sec:pipeline}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=0.6cm and 1.2cm,
+    every node/.style={font=\small},
+    block/.style={rectangle, draw, rounded corners=4pt,
+                  minimum width=3.2cm, minimum height=0.9cm,
+                  fill=blue!8, align=center},
+    data/.style={rectangle, draw, dashed, rounded corners=2pt,
+                 minimum width=2.6cm, minimum height=0.7cm,
+                 fill=green!8, align=center, font=\footnotesize},
+    arr/.style={-{Stealth[length=6pt]}, thick, color=blue!60},
+]
+% Nœuds
+\node[block] (tok)  {1. Tokenisation\\{\footnotesize BertTokenizer}};
+\node[block, below=of tok]  (bert) {2. Transformeur\\{\footnotesize MiniLM-L6-v2 (ONNX)}};
+\node[block, below=of bert] (pool) {3. Mean Pooling\\{\footnotesize pondéré par l'attention}};
+\node[block, below=of pool] (norm) {4. Normalisation L2};
+\node[block, below=of norm] (hnsw) {5. Index HNSW\\{\footnotesize distance cosinus}};
+
+% Annotations de données
+\node[data, right=of tok]  (d1) {IDs de tokens\\$[101, 2035, \ldots, 102]$};
+\node[data, right=of bert] (d2) {états cachés\\$H \in \mathbb{R}^{256 \times 384}$};
+\node[data, right=of pool] (d3) {vecteur de phrase\\$\mathbf{e} \in \mathbb{R}^{384}$};
+\node[data, right=of norm] (d4) {vecteur unitaire\\$\hat{\mathbf{e}},\; \lVert\hat{\mathbf{e}}\rVert=1$};
+
+% Entrée / sortie
+\node[above=0.4cm of tok, font=\bfseries] (inp) {Texte brut : \texttt{"L'expédition standard nationale..."}};
+\node[below=0.4cm of hnsw, font=\bfseries] (out) {Indexé et recherchable};
+
+% Flèches
+\draw[arr] (inp)  -- (tok);
+\draw[arr] (tok)  -- (bert);
+\draw[arr] (bert) -- (pool);
+\draw[arr] (pool) -- (norm);
+\draw[arr] (norm) -- (hnsw);
+\draw[arr] (hnsw) -- (out);
+\draw[->, dashed, gray] (tok.east)  -- (d1.west);
+\draw[->, dashed, gray] (bert.east) -- (d2.west);
+\draw[->, dashed, gray] (pool.east) -- (d3.west);
+\draw[->, dashed, gray] (norm.east) -- (d4.west);
+\end{tikzpicture}
+\caption{Pipeline d'embedding par défaut de ChromaDB, du texte brut au
+         vecteur indexé. Chaque boîte numérotée correspond à une étape
+         décrite en Section~\ref{sec:pipeline}.}
+\label{fig:pipeline}
+\end{figure}
+
+%% ════════════════════════════════════════════════════════════════════════════
+\section{Un exemple complet fonctionnel}
+\label{sec:example}
+%% ════════════════════════════════════════════════════════════════════════════
+
+Nous commençons par le programme complet, puis décortiquons chaque
+partie.
+
+\subsection{Le jeu de données : \texttt{policies.txt}}
+
+Notre jeu de données est un fichier texte de 56 lignes, chacune
+contenant une phrase de la politique d'expédition et de retours d'une
+entreprise e-commerce fictive. Les trois premières lignes sont :
+
+\begin{lstlisting}[style=outputstyle,caption={Trois premières lignes de
+\texttt{policies.txt}.}]
+All garments are inspected for quality before being
+  packaged for shipment ...
+Standard domestic shipping takes 3-5 business days ...
+Expedited domestic shipping delivers within 1-2
+  business days ...
+\end{lstlisting}
+
+\subsection{Indexation des documents}
+\label{sec:indexing}
+
+Le Listing~\ref{lst:main} montre le programme d'indexation complet.
+
+\begin{lstlisting}[caption={Programme d'indexation minimal ChromaDB
+(\texttt{main.py}).},label=lst:main]
+import chromadb
+import uuid
+
+# 1. Créer un client éphémère (en mémoire)
+client = chromadb.Client()
+
+# 2. Créer une collection (comme une "table" pour vecteurs)
+collection = client.create_collection(name="policies")
+
+# 3. Lire les phrases de politique
+with open("policies.txt", "r", encoding="utf-8") as f:
+    policies: list[str] = f.read().splitlines()
+
+# 4. Ajouter les documents -- les embeddings sont calculés automatiquement
+collection.add(
+    ids=[str(uuid.uuid4()) for _ in policies],
+    documents=policies,
+    metadatas=[{"line": line} for line in range(len(policies))],
+)
+
+# 5. Inspecter les 10 premiers enregistrements
+print(collection.peek())
+\end{lstlisting}
+
+L'exécution de ce programme produit la sortie du
+Listing~\ref{lst:peek}, où chaque document a été transformé en vecteur
+de 384 dimensions.
+
+\begin{lstlisting}[style=outputstyle,caption={Sortie abrégée de
+\texttt{collection.peek()}.},label=lst:peek]
+{
+  'ids': ['0d07bf7e-...', 'b17bedb6-...', ...],
+  'embeddings': array([
+    [-7.539e-02,  4.958e-02,  1.364e-02, ...,
+     -1.041e-01,  7.627e-02, -1.993e-02],  # doc 0
+    [ 1.046e-02, -3.367e-02,  3.771e-02, ...,
+     -3.124e-02, -2.690e-03,  4.416e-02],  # doc 1
+    ...
+  ], shape=(10, 384)),
+  'documents': [
+    'All garments are inspected ...',
+    'Standard domestic shipping ...',
+    ...
+  ],
+  'metadatas': [{'line': 0}, {'line': 1}, ...]
+}
+\end{lstlisting}
+
+\subsection{Interrogation : recherche sémantique}
+\label{sec:querying}
+
+\begin{lstlisting}[caption={Interrogation de la collection pour trouver
+des documents similaires.},label=lst:query]
+results = collection.query(
+    query_texts=["How long does shipping take?"],
+    n_results=3,
+)
+for doc, dist in zip(results["documents"][0],
+                     results["distances"][0]):
+    print(f"  [{dist:.4f}] {doc[:80]}...")
+\end{lstlisting}
+
+\begin{lstlisting}[style=outputstyle,caption={Résultats : top-3 par
+distance cosinus (plus petit = meilleur).},label=lst:queryout]
+[0.2891] Standard domestic shipping takes 3-5
+         business days after your order ...
+[0.3312] Expedited domestic shipping delivers
+         within 1-2 business days for orders ...
+[0.4718] International shipping is available to
+         over 200 destinations, with transit ...
+\end{lstlisting}
+
+Le texte de la requête est transformé en embedding via le \emph{même}
+pipeline que les documents. L'index HNSW retourne ensuite les trois
+vecteurs les plus proches par distance cosinus.
+
+%% ════════════════════════════════════════════════════════════════════════════
+\section{Décorticage du pipeline d'embedding}
+\label{sec:pipeline}
+%% ════════════════════════════════════════════════════════════════════════════
+
+Lorsque l'utilisateur appelle \texttt{collection.add(documents=...)},
+ChromaDB détecte qu'aucune \texttt{embedding\_function} n'a été fournie
+et utilise par défaut \texttt{Default\-Embedding\-Function}, qui délègue
+à \texttt{ONNX\-MiniLM\_L6\_V2}. Nous traçons maintenant chaque étape
+interne.
+
+\subsection{Étape 1 : téléchargement et mise en cache du modèle}
+
+Lors de la première utilisation, le modèle est téléchargé depuis un
+bucket S3 et mis en cache localement :
+\begin{center}
+\small
+\texttt{\textasciitilde/.cache/chroma/onnx\_models/all-MiniLM-L6-v2/onnx/}
+\end{center}
+Le cache contient quatre fichiers :
+
+\begin{table}[H]
+\centering
+\caption{Fichiers dans le répertoire du modèle ONNX en cache.}
+\label{tab:model_files}
+\begin{tabular}{lrl}
+\toprule
+\textbf{Fichier} & \textbf{Taille} & \textbf{Rôle} \\
+\midrule
+\texttt{model.onnx}      & $\sim$90\,Mo & Poids du transformeur (format ONNX) \\
+\texttt{tokenizer.json}  & $\sim$700\,Ko & Vocabulaire et règles BertTokenizer \\
+\texttt{config.json}     & $<$1\,Ko  & Hyperparamètres de l'architecture \\
+\texttt{vocab.txt}       & $\sim$230\,Ko & 30\,522 tokens WordPiece \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Étape 2 : tokenisation}
+\label{sec:tokenization}
+
+Le tokeniseur est un \emph{BertTokenizer} chargé depuis
+\texttt{tokenizer.json} via la bibliothèque Hugging Face
+\texttt{tokenizers}. Il effectue :
+
+\begin{enumerate}
+    \item \textbf{Mise en minuscules} : tout le texte est converti en
+          minuscules.
+    \item \textbf{Découpage WordPiece} : les mots sont découpés en
+          sous-tokens issus d'un vocabulaire de 30\,522 entrées.
+    \item \textbf{Insertion de tokens spéciaux} : \texttt{[CLS]} est
+          ajouté au début, \texttt{[SEP]} à la fin.
+    \item \textbf{Troncature} : les séquences de plus de 256 tokens sont
+          tronquées.
+    \item \textbf{Rembourrage (padding)} : les séquences de moins de 256
+          tokens sont complétées à droite avec \texttt{[PAD]} (ID 0).
+\end{enumerate}
+
+\begin{lstlisting}[caption={Reproduction manuelle de l'étape de
+tokenisation.},label=lst:tokenize]
+from tokenizers import Tokenizer
+import os
+
+# Charger le même tokeniseur que ChromaDB
+cache = os.path.expanduser(
+    "~/.cache/chroma/onnx_models/"
+    "all-MiniLM-L6-v2/onnx"
+)
+tok = Tokenizer.from_file(
+    os.path.join(cache, "tokenizer.json")
+)
+tok.enable_truncation(max_length=256)
+tok.enable_padding(pad_id=0, pad_token="[PAD]",
+                   length=256)
+
+text = "Standard domestic shipping takes 3-5 days"
+enc = tok.encode(text)
+print(enc.ids[:15])
+# [101, 3115, 4968, 6554, 3138, 1017, 1011, 1019,
+#  2420, 102, 0, 0, 0, 0, 0]
+print(enc.attention_mask[:15])
+# [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+\end{lstlisting}
+
+Le \texttt{attention\_mask} distingue les vrais tokens (1) du rembourrage
+(0). Ce masque est essentiel pour le mean pooling (Étape~4).
+
+\subsection{Étape 3 : passe avant du transformeur}
+
+Les entrées tokenisées sont passées à la session d'inférence ONNX
+Runtime :
+
+\begin{lstlisting}[caption={Inférence ONNX Runtime (simplifiée depuis
+le code source de ChromaDB).},label=lst:onnx]
+import numpy as np
+import onnxruntime as ort
+
+session = ort.InferenceSession(
+    os.path.join(cache, "model.onnx")
+)
+
+onnx_input = {
+    "input_ids":      np.array([enc.ids],
+                               dtype=np.int64),
+    "attention_mask":  np.array([enc.attention_mask],
+                               dtype=np.int64),
+    "token_type_ids":  np.zeros((1, 256),
+                               dtype=np.int64),
+}
+
+output = session.run(None, onnx_input)
+last_hidden = output[0]  # shape: (1, 256, 384)
+print(last_hidden.shape)
+# (1, 256, 384)
+\end{lstlisting}
+
+Le tenseur de sortie $H \in \mathbb{R}^{1 \times 256 \times 384}$
+contient un vecteur de 384 dimensions pour chaque position de token.
+
+\subsection{Étape 4 : mean pooling}
+\label{sec:pooling}
+
+Un embedding de phrase unique est produit en moyennant les vecteurs de
+tokens, mais \emph{uniquement sur les vrais tokens} (en excluant le
+rembourrage) :
+
+\begin{equation}
+\label{eq:meanpool}
+\mathbf{e} = \frac{\displaystyle\sum_{i=1}^{n} m_i \, \mathbf{h}_i}
+                  {\displaystyle\sum_{i=1}^{n} m_i},%
+\footnote{\emph{Mean pooling pondéré} : moyenne arithmétique des états 
+cachés $\mathbf{h}_i$, où le masque $m_i \in \{0,1\}$ exclut les tokens 
+de rembourrage. Pour une phrase de 10 mots réels + 246 tokens [PAD], 
+seuls les 10 premiers vecteurs contribuent à la moyenne. Cette opération 
+condense une séquence de longueur variable en un embedding de taille 
+fixe.}
+\end{equation}
+
+où $\mathbf{h}_i \in \mathbb{R}^{384}$ est l'état caché à la position
+$i$ et $m_i \in \{0,1\}$ est le masque d'attention.
+
+\begin{lstlisting}[caption={Implémentation du mean pooling (issue du
+code source de ChromaDB).},label=lst:pool]
+mask = np.array([enc.attention_mask], dtype=np.float32)
+mask_expanded = np.broadcast_to(
+    np.expand_dims(mask, -1), last_hidden.shape
+)
+
+embedding = np.sum(
+    last_hidden * mask_expanded, axis=1
+) / np.clip(
+    mask_expanded.sum(axis=1), a_min=1e-9, a_max=None
+)
+print(embedding.shape)  # (1, 384)
+\end{lstlisting}
+
+\subsection{Étape 5 : normalisation L2}
+
+
+
+L'embedding est normalisé à longueur unitaire afin que le produit
+scalaire soit égal à la similarité cosinus :
+
+\begin{equation}
+\label{eq:l2norm}
+\hat{\mathbf{e}} = \frac{\mathbf{e}}{\lVert\mathbf{e}\rVert_2},
+\qquad \text{où } \lVert\mathbf{e}\rVert_2
+  = \sqrt{\sum_{i=1}^{384} e_i^2}
+  \footnote{Cette normalisation ramène tous les vecteurs à une longueur 
+  unitaire (comme des points sur une sphère de rayon 1), de sorte que 
+  seule leur direction compte. Cela rend la comparaison indépendante 
+  de la longueur du texte original.}.
+\end{equation}
+\textit{Interprétation : on divise chaque dimension du vecteur 
+$\mathbf{e}$ par sa longueur totale $\lVert\mathbf{e}\rVert_2$, 
+obtenant un vecteur $\hat{\mathbf{e}}$ de longueur exactement 1. 
+Cela garantit que deux phrases longues et courtes ayant le même sens 
+seront considérées comme identiques, car seule leur direction dans 
+l'espace compte, pas leur magnitude.}
+
+Après normalisation, $\lVert\hat{\mathbf{e}}\rVert = 1$, ce qui
+signifie que $\cos(\hat{\mathbf{u}},\hat{\mathbf{v}}) =
+\hat{\mathbf{u}} \cdot \hat{\mathbf{v}}$.
+
+\begin{lstlisting}[caption={Normalisation L2.},label=lst:norm]
+norm = np.linalg.norm(embedding, axis=1, keepdims=True)
+norm = np.maximum(norm, 1e-12)
+embedding_normed = embedding / norm
+
+print(np.linalg.norm(embedding_normed))
+# 1.0000001  (précision float32)
+\end{lstlisting}
+
+\noindent
+\textbf{Explication ligne par ligne de la normalistion L2 :}
+\begin{itemize}
+    \item \textbf{Ligne 1} : Calcule la longueur euclidienne du vecteur 
+          (norme L2) : $\lVert\mathbf{e}\rVert_2 = \sqrt{e_1^2 + e_2^2 + 
+          \ldots + e_{384}^2}$. Le paramètre \texttt{axis=1} calcule la 
+          norme pour chaque ligne (document) séparément.
+    
+    \item \textbf{Ligne 2} : Évite la division par zéro en garantissant 
+          que la norme est au minimum $10^{-12}$. Cela protège contre le 
+          cas improbable d'un vecteur nul.
+    
+    \item \textbf{Ligne 3} : Divise chaque dimension du vecteur par sa 
+          norme totale. C'est l'opération $\hat{\mathbf{e}} = 
+          \mathbf{e}/\lVert\mathbf{e}\rVert_2$ de 
+          l'Équation~\ref{eq:l2norm}.
+    
+    \item \textbf{Ligne 5} : Vérifie que le vecteur normalisé a bien 
+          une longueur de 1 (avec la légère imprécision numérique du 
+          format \texttt{float32}).
+\end{itemize}
+
+Le vecteur résultant de 384 valeurs \texttt{float32} est ce que ChromaDB
+stocke et indexe.
+
+%% ════════════════════════════════════════════════════════════════════════════
+\section{L'index HNSW}
+\label{sec:hnsw}
+%% ════════════════════════════════════════════════════════════════════════════
+
+Après la génération de l'embedding, les vecteurs sont insérés dans un
+graphe HNSW~\cite{malkov2018hnsw}. Le Tableau~\ref{tab:hnsw} liste les
+paramètres par défaut de ChromaDB.
+
+\begin{table}[H]
+\centering
+\caption{Paramètres HNSW par défaut dans ChromaDB.}
+\label{tab:hnsw}
+\begin{tabular}{lrl}
+\toprule
+\textbf{Paramètre} & \textbf{Défaut} & \textbf{Signification} \\
+\midrule
+\texttt{space}             & cosine & Métrique de distance \\
+\texttt{ef\_construction}  & 100    & Largeur de faisceau à la construction \\
+\texttt{max\_neighbors} ($M$) & 16  & Arêtes par nœud \\
+\texttt{ef\_search}        & 100    & Largeur de faisceau à la recherche \\
+\texttt{num\_threads}      & nb CPU & Threads parallèles \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Insertion.}
+Lorsqu'un nouveau vecteur $\hat{\mathbf{e}}$ est ajouté, HNSW :
+\begin{enumerate}
+    \item L'affecte à une couche aléatoire $\ell$ (distribution
+          géométrique).
+    \item En partant du point d'entrée à la couche la plus haute,
+          trouve gloutonnement le plus proche voisin à chaque couche
+          jusqu'à $\ell$.
+    \item Aux couches $\ell$ à 0, connecte le nouveau nœud à ses $M$
+          plus proches voisins en élaguant les arêtes les plus longues.
+\end{enumerate}
+
+\paragraph{Recherche.}
+Étant donné un vecteur de requête $\hat{\mathbf{q}}$, HNSW parcourt
+depuis la couche supérieure vers le bas en maintenant une liste
+dynamique de candidats de taille \texttt{ef\_search}. À la couche du
+bas, les $k$ meilleurs candidats sont retournés. La complexité est
+$O(\log N)$ par requête pour $N$ vecteurs, contre $O(N)$ en force brute.
+
+%% ════════════════════════════════════════════════════════════════════════════
+\section{Assemblage complet : un exemple de récupération RAG}
+\label{sec:rag}
+%% ════════════════════════════════════════════════════════════════════════════
+
+Le Listing~\ref{lst:full_rag} montre un programme de récupération
+complet qu'un chatbot basé sur un LLM pourrait utiliser pour répondre
+aux questions des clients.
+
+\begin{lstlisting}[caption={Exemple complet de récupération RAG.},
+label=lst:full_rag]
+import chromadb
+import uuid
+
+# --- Phase d'indexation ---
+client = chromadb.Client()
+collection = client.create_collection(
+    name="policies"
+)
+
+with open("policies.txt", "r", encoding="utf-8") as f:
+    policies = f.read().splitlines()
+
+collection.add(
+    ids=[str(uuid.uuid4()) for _ in policies],
+    documents=policies,
+    metadatas=[{"line": i} for i in range(len(policies))],
+)
+
+# --- Phase de récupération ---
+queries = [
+    "Can I return swimwear?",
+    "Do you ship internationally?",
+    "What about carbon emissions?",
+]
+
+for q in queries:
+    results = collection.query(
+        query_texts=[q], n_results=3
+    )
+    print(f"\nQuery: {q}")
+    for doc, dist, meta in zip(
+        results["documents"][0],
+        results["distances"][0],
+        results["metadatas"][0],
+    ):
+        print(f"  [{dist:.4f}] (ligne {meta['line']}) "
+              f"{doc[:70]}...")
+\end{lstlisting}
+
+\begin{lstlisting}[style=outputstyle,caption={Sortie de l'exemple RAG.},
+label=lst:rag_output]
+Query: Can I return swimwear?
+  [0.4102] (ligne 12) Swimwear can only be returned
+    with hygienic liners and all tags intact...
+  [0.5238] (ligne 10) Returned items must be unworn,
+    unwashed, and free of odors, stains...
+  [0.5514] (ligne 11) Footwear must be returned in
+    the original box, which should be placed...
+
+Query: Do you ship internationally?
+  [0.3156] (ligne 3)  International shipping is
+    available to over 200 destinations...
+  [0.5289] (ligne 4)  Customers are responsible for
+    any local duties, taxes, or import fees...
+  [0.5834] (ligne 1)  Standard domestic shipping takes
+    3-5 business days after your order...
+
+Query: What about carbon emissions?
+  [0.2893] (ligne 7)  We offset 100 percent of
+    shipping-related carbon emissions...
+  [0.5617] (ligne 8)  Packaging materials are made
+    from 100 percent recycled or sustainably...
+  [0.7901] (ligne 0)  All garments are inspected for
+    quality before being packaged...
+\end{lstlisting}
+
+Observez comment chaque requête retrouve les phrases de politique les
+plus pertinentes sémantiquement, même lorsque les mots exacts diffèrent
+(par exemple, « carbon emissions » correspond à la politique de
+compensation carbone).
+
+%% ════════════════════════════════════════════════════════════════════════════
+\section{Comprendre les nombres : anatomie d'un embedding}
+\label{sec:anatomy}
+%% ════════════════════════════════════════════════════════════════════════════
+
+Chaque embedding est un vecteur dense de 384 nombres à virgule flottante
+simple précision IEEE 754. Le Tableau~\ref{tab:embedding} montre des
+dimensions sélectionnées pour trois phrases de politique.
+
+\begin{table}[H]
+\centering
+\caption{Dimensions sélectionnées des embeddings pour trois documents.
+Les valeurs sont arrondies à trois décimales.}
+\label{tab:embedding}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Dim} & \textbf{Qualité} & \textbf{Livraison} & \textbf{Retours} \\
+ & \textbf{(ligne 0)} & \textbf{(ligne 1)} & \textbf{(ligne 9)} \\
+\midrule
+$e_1$   & $-0{,}075$ & $ 0{,}010$ & $-0{,}021$ \\
+$e_2$   & $ 0{,}050$ & $-0{,}034$ & $-0{,}000$ \\
+$e_3$   & $ 0{,}014$ & $ 0{,}038$ & $ 0{,}007$ \\
+$\vdots$ & $\vdots$ & $\vdots$ & $\vdots$ \\
+$e_{382}$ & $-0{,}104$ & $-0{,}031$ & $-0{,}013$ \\
+$e_{383}$ & $ 0{,}076$ & $-0{,}003$ & $ 0{,}016$ \\
+$e_{384}$ & $-0{,}020$ & $ 0{,}044$ & $ 0{,}024$ \\
+\midrule
+$\lVert\hat{\mathbf{e}}\rVert$ & $1{,}000$ & $1{,}000$ & $1{,}000$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Les dimensions individuelles ne sont pas interprétables par l'humain ;
+le sens émerge des relations géométriques \emph{entre} vecteurs. Deux
+phrases liées à la livraison auront une faible distance cosinus
+($\approx 0{,}3$), tandis qu'une phrase de livraison et une phrase de
+retours auront une distance plus grande ($\approx 0{,}6$).
+
+%% ════════════════════════════════════════════════════════════════════════════
+\section{Configuration principale de ChromaDB}
+\label{sec:config}
+%% ════════════════════════════════════════════════════════════════════════════
+
+Le Tableau~\ref{tab:defaults} résume les valeurs par défaut les plus
+importantes.
+
+\begin{table}[H]
+\centering
+\caption{Valeurs de configuration par défaut de ChromaDB relatives aux
+embeddings.}
+\label{tab:defaults}
+\begin{tabular}{lll}
+\toprule
+\textbf{Paramètre} & \textbf{Valeur par défaut} & \textbf{Notes} \\
+\midrule
+Modèle d'embedding  & all-MiniLM-L6-v2 & 22M paramètres, ONNX \\
+Dimension            & 384              & float32 \\
+Tokens max           & 256              & Tronqué si plus long \\
+Taille du vocabulaire & 30\,522         & WordPiece \\
+Taille du batch      & 32               & Documents par passe avant \\
+Métrique de distance & cosinus          & $1 - \cos(\mathbf{u},\mathbf{v})$ \\
+Backend de stockage  & Mémoire / SQLite & Éphémère vs.\ persistant \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Utiliser une fonction d'embedding personnalisée}
+
+ChromaDB permet de remplacer le modèle par défaut :
+
+\begin{lstlisting}[caption={Utilisation des embeddings OpenAI au lieu du
+modèle par défaut.},label=lst:custom_ef]
+from chromadb.utils.embedding_functions import (
+    OpenAIEmbeddingFunction,
+)
+
+ef = OpenAIEmbeddingFunction(
+    api_key="sk-...",
+    model_name="text-embedding-3-small",
+)
+
+collection = client.create_collection(
+    name="policies",
+    embedding_function=ef,
+)
+# collection.add() utilisera maintenant l'API OpenAI
+\end{lstlisting}
+
+%% ════════════════════════════════════════════════════════════════════════════
+\section{Note de compatibilité Python 3.14}
+\label{sec:py314}
+%% ════════════════════════════════════════════════════════════════════════════
+
+À la version 1.4.1 de ChromaDB, l'importation de la bibliothèque sous
+Python 3.14 échoue en raison d'un bogue de détection de version de
+Pydantic dans \texttt{chromadb/config.py} (issue GitHub
+\#5996)\footnote{\url{https://github.com/chroma-core/chroma/issues/5996}}.
+La cause racine est que \texttt{pydantic.v1}, une couche de
+compatibilité rétroactive, utilise de l'introspection de métaclasses
+incompatible avec l'évaluation différée des annotations de Python 3.14
+(PEP~749). Le correctif nécessite :
+\begin{enumerate}
+    \item L'installation de \texttt{pydantic-settings$\geq$2.0}.
+    \item Le remplacement du bloc d'import dans \texttt{config.py} pour
+          privilégier \texttt{pydantic\_settings.BaseSettings}.
+    \item L'ajout d'annotations de type à trois champs non annotés \newline
+          (\texttt{chroma\_coordinator\_host},
+           \texttt{chroma\_logservice\_host}, \newline
+           \texttt{chroma\_logservice\_port}).
+\end{enumerate}
+Un script de patch automatisant ces étapes est disponible dans le dépôt
+accompagnant cet article.
+
+%% ════════════════════════════════════════════════════════════════════════════
+\section{Embeddings multilingues : étude de cas e-commerce en français}
+\label{sec:multilingual}
+%% ════════════════════════════════════════════════════════════════════════════
+
+Le modèle par défaut \texttt{all-MiniLM-L6-v2} est entraîné
+principalement sur des données anglaises. Pour les corpus non anglophones,
+le modèle ONNX intégré à ChromaDB produit des embeddings de mauvaise
+qualité car le vocabulaire sous-jacent et la distribution d'entraînement
+ne couvrent pas bien les autres langues. Cette section montre comment
+remplacer le modèle par défaut par un encodeur de phrases
+\emph{multilingue} et démontre deux capacités puissantes : la recherche
+sémantique en français et la recherche \emph{interlingue} (requêtes en
+anglais sur un corpus en français).
+
+\subsection{Pourquoi un modèle multilingue ?}
+\label{sec:why_multilingual}
+
+Le modèle \texttt{paraphrase-multilingual-MiniLM-L12-v2}%
+~\cite{reimers2019sbert} a été entraîné sur des paires de phrases
+parallèles dans plus de 50 langues à l'aide d'une procédure de
+distillation de connaissances : un modèle enseignant anglais de haute
+qualité guide un modèle étudiant multilingue de sorte que des phrases
+sémantiquement équivalentes reçoivent des vecteurs similaires
+\emph{quelle que soit la langue}. Le Tableau~\ref{tab:model_comparison}
+compare les deux modèles.
+
+\begin{table}[H]
+\centering
+\caption{Comparaison du modèle anglais par défaut et du modèle
+multilingue utilisé dans cette section.}
+\label{tab:model_comparison}
+\begin{tabular}{lcc}
+\toprule
+ & \textbf{all-MiniLM-L6-v2} & \textbf{paraphrase-multilingual-} \\
+ &                            & \textbf{MiniLM-L12-v2} \\
+\midrule
+Langues         & Anglais seul   & 50+ \\
+Couches         & 6              & 12 \\
+Dim. cachée     & 384            & 384 \\
+Paramètres      & 22\,M          & 118\,M \\
+Taille download & $\sim$90\,Mo   & $\sim$470\,Mo \\
+Moteur d'exéc.  & ONNX (intégré) & Sentence-Transformers (PyTorch) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Le modèle multilingue utilise la même dimensionnalité de sortie (384)
+que le modèle par défaut, donc la configuration HNSW et les métriques de
+distance restent inchangées. La différence clé est que le modèle est
+chargé via la bibliothèque \texttt{sentence-transformers} plutôt que par
+le moteur ONNX intégré à ChromaDB.
+
+\subsection{Création de la fonction d'embedding multilingue}
+\label{sec:multilingual_ef}
+
+ChromaDB fournit un wrapper
+\texttt{SentenceTransformerEmbeddingFunction} qui délègue le calcul des
+embeddings à la bibliothèque \texttt{sentence-transformers}. Cela permet
+d'utiliser n'importe quel modèle du hub
+Sentence-Transformers\footnote{%
+\url{https://huggingface.co/sentence-transformers}}.
+
+\begin{lstlisting}[caption={Instanciation de la fonction d'embedding
+multilingue.},label=lst:multilingual_ef]
+from chromadb.utils.embedding_functions import (
+    SentenceTransformerEmbeddingFunction,
+)
+
+MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
+
+# Le modèle est téléchargé automatiquement au 1er appel
+# (~470 Mo) et mis en cache dans
+# ~/.cache/torch/sentence_transformers/
+embedding_fn = SentenceTransformerEmbeddingFunction(
+    model_name=MODEL_NAME,
+    # device="cuda"  # décommenter pour GPU NVIDIA
+)
+\end{lstlisting}
+
+Le premier appel déclenche un téléchargement automatique de
+$\sim$470\,Mo depuis le hub Hugging Face. Les exécutions suivantes
+utilisent le cache local situé dans
+\texttt{\textasciitilde/.cache/torch/sentence\_transformers/}. Si un GPU
+compatible CUDA est disponible, passer \texttt{device="cuda"} décharge
+l'inférence du transformeur sur le GPU, offrant une accélération
+significative pour les grands lots.
+
+\subsection{Jeu de données : polices e-commerce en français}
+\label{sec:french_dataset}
+
+Nous utilisons une traduction française du même jeu de 56 phrases de
+polices e-commerce (\texttt{polices.txt}). Chaque ligne est une phrase
+de police en français, par exemple :
+
+\begin{lstlisting}[style=outputstyle,caption={Lignes sélectionnées de
+\texttt{polices.txt} (polices en français).},label=lst:polices_sample]
+L'expédition standard nationale prend de 3 à 5 jours
+  ouvrables après le traitement de la commande...
+Les maillots de bain ne peuvent être retournés que
+  si les doublures hygiéniques et toutes les
+  étiquettes sont intactes...
+Nous compensons 100 %% des émissions de carbone liées
+  à l'expédition en investissant dans des projets
+  environnementaux et de reforestation vérifiés...
+\end{lstlisting}
+
+\subsection{Indexation avec métadonnées par catégorie}
+\label{sec:french_indexing}
+
+Pour enrichir les documents stockés, nous assignons un label de
+\emph{catégorie} à chaque phrase de police à l'aide d'une simple
+fonction de correspondance par mots-clés. Ces métadonnées sont stockées
+aux côtés de l'embedding et peuvent servir à filtrer les résultats lors
+de l'interrogation.
+
+\begin{lstlisting}[caption={Catégorisation par mots-clés et indexation
+des polices françaises (\texttt{main\_fr\_polices.py}).},
+label=lst:french_index]
+import chromadb
+import uuid
+
+def _categorize(text: str) -> str:
+    """Assigne une catégorie par mots-clés."""
+    t = text.lower()
+    if any(w in t for w in
+           ["livraison", "expédition", "colis"]):
+        return "livraison"
+    if any(w in t for w in
+           ["retour", "rembours", "échange"]):
+        return "retours"
+    if any(w in t for w in
+           ["prix", "promo", "rabais"]):
+        return "tarification"
+    # ... catégories supplémentaires omises
+    return "général"
+
+client = chromadb.Client()
+
+collection = client.create_collection(
+    name="polices_fr",
+    embedding_function=embedding_fn,
+    metadata={"hnsw:space": "cosine"},
+)
+
+with open("polices.txt", "r", encoding="utf-8") as f:
+    polices = [l.strip() for l in f
+               if l.strip()]
+
+collection.add(
+    ids=[str(uuid.uuid4()) for _ in polices],
+    documents=polices,
+    metadatas=[{
+        "ligne":     i,
+        "categorie": _categorize(doc),
+        "langue":    "fr",
+    } for i, doc in enumerate(polices)],
+)
+\end{lstlisting}
+
+Le dictionnaire \texttt{metadata} sur la collection fixe la métrique de
+distance HNSW à cosinus (la valeur par défaut, rendue explicite ici pour
+la clarté). Les métadonnées de chaque document incluent son numéro de
+ligne, la catégorie assignée automatiquement et un tag de langue.
+ChromaDB supporte les filtres \texttt{where} sur les métadonnées, de
+sorte qu'une application en aval pourrait restreindre la recherche à une
+catégorie spécifique (par ex., \texttt{where=\{"categorie":
+"livraison"\}}).
+
+\subsection{Recherche sémantique en français}
+\label{sec:french_queries}
+
+Avec les documents français indexés, nous effectuons des requêtes
+sémantiques \emph{entièrement en français}. Le modèle multilingue
+projette à la fois les requêtes et les documents dans le même espace de
+384 dimensions, de sorte que la distance cosinus reflète la similarité
+sémantique quelle que soit la langue.
+
+\begin{lstlisting}[caption={Interrogation de la collection française
+avec des questions en français.},label=lst:french_query]
+requetes = [
+    "Combien de temps prend la livraison ?",
+    "Est-ce que je peux retourner un maillot"
+    " de bain ?",
+    "Comment fonctionne le programme de"
+    " fidélité ?",
+    "Les articles en solde sont-ils"
+    " échangeables ?",
+]
+
+for query in requetes:
+    results = collection.query(
+        query_texts=[query],
+        n_results=5,
+    )
+    print(f"Requête : {query}")
+    for doc, dist, meta in zip(
+        results["documents"][0],
+        results["distances"][0],
+        results["metadatas"][0],
+    ):
+        print(f"  [{dist:.4f}] "
+              f"({meta['categorie']}) "
+              f"{doc[:80]}...")
+\end{lstlisting}
+
+\begin{lstlisting}[style=outputstyle,caption={Résultats sélectionnés
+pour la requête française « Combien de temps prend la livraison\,? ».},
+label=lst:french_results]
+Requête : Combien de temps prend la livraison ?
+  [0.2134] (livraison) L'expédition standard
+    nationale prend de 3 à 5 jours ouvrables...
+  [0.2987] (livraison) L'expédition express
+    nationale livre sous 1 à 2 jours ouvrables...
+  [0.4256] (livraison) La livraison internationale
+    est disponible vers plus de 200 destinations...
+\end{lstlisting}
+
+Les distances cosinus sont comparables à celles obtenues avec le modèle
+anglais sur des données anglaises (Section~\ref{sec:querying}),
+confirmant que le modèle multilingue atteint une qualité discriminative
+similaire en français.
+
+\subsection{Recherche interlingue : requêtes en anglais sur des
+documents français}
+\label{sec:crosslingual}
+
+La capacité la plus remarquable d'un modèle d'embedding multilingue est
+sans doute la \emph{recherche interlingue} : interroger dans une langue
+et retrouver des documents écrits dans une autre. Parce que le modèle a
+été entraîné sur des corpus parallèles, des phrases sémantiquement
+équivalentes dans des langues différentes sont projetées vers des points
+voisins dans l'espace d'embedding.
+
+\begin{lstlisting}[caption={Recherche interlingue : requêtes en anglais
+sur des documents français.},label=lst:crosslingual]
+queries_en = [
+    "How long does shipping take?",
+    "Can I return swimwear?",
+    "What is your carbon offset policy?",
+]
+
+for query in queries_en:
+    results = collection.query(
+        query_texts=[query],
+        n_results=3,
+    )
+    print(f"Query (EN): {query}")
+    for doc, dist in zip(
+        results["documents"][0],
+        results["distances"][0],
+    ):
+        print(f"  [{dist:.4f}] {doc[:80]}...")
+\end{lstlisting}
+
+\begin{lstlisting}[style=outputstyle,caption={Résultats interlingues :
+des requêtes en anglais retrouvent des documents français pertinents.},
+label=lst:crosslingual_out]
+Query (EN): How long does shipping take?
+  [0.3356] L'expédition standard nationale prend
+    de 3 à 5 jours ouvrables...
+  [0.4238] Nous offrons un délai de retour de
+    30 jours à compter de la date de livraison...
+  [0.4249] L'expédition express nationale livre
+    sous 1 à 2 jours ouvrables...
+
+Query (EN): Can I return swimwear?
+  [0.5243] Les maillots de bain ne peuvent être
+    retournés que si les doublures hygiéniques...
+  [0.7104] Les articles retournés doivent être non
+    portés, non lavés et exempts d'odeurs...
+  [0.7357] Nous offrons un délai de retour de
+    30 jours à compter de la date de livraison...
+
+Query (EN): What is your carbon offset policy?
+  [0.4542] Nous compensons 100 %% des émissions de
+    carbone liées à l'expédition en investissant...
+  [0.6586] Nous pouvons mettre à jour ces politiques
+    périodiquement...
+  [0.6924] Les commandes de plus de 75 dollars sont
+    admissibles à la livraison standard gratuite...
+\end{lstlisting}
+
+La requête anglaise « How long does shipping take? » retrouve
+correctement la phrase française sur les délais de livraison standard
+avec une distance cosinus de seulement 0,3356 --- démontrant que le
+modèle place des phrases sémantiquement équivalentes dans des langues
+différentes très proches dans l'espace d'embedding.
+
+\newpage
+\subsection{Discussion}
+\label{sec:multilingual_discussion}
+
+Cet exemple multilingue met en lumière trois leçons pratiques pour la
+construction de systèmes RAG sur du texte non anglophone :
+
+\begin{enumerate}
+    \item \textbf{Le choix du modèle est déterminant.}  Le modèle ONNX
+          par défaut est exclusivement anglais. Pour les corpus
+          multilingues,\newline
+          \texttt{SentenceTransformerEmbeddingFunction} avec un modèle
+          tel que \texttt{paraphrase-multilingual-MiniLM-L12-v2} est un
+          remplacement direct qui ne nécessite qu'un seul argument
+          supplémentaire.
+
+    \item \textbf{La recherche interlingue est gratuite.}  Une fois un
+          modèle multilingue utilisé, la recherche
+          anglais$\leftrightarrow$français (et tout autre couple de
+          langues supporté) fonctionne immédiatement --- aucun pipeline
+          de traduction n'est nécessaire.
+
+    \item \textbf{L'enrichissement par métadonnées est orthogonal.}  Les
+          filtres de métadonnées de ChromaDB (par ex.,
+          \texttt{where=\{"categorie": "livraison"\}}) peuvent être
+          combinés avec la recherche sémantique quel que soit le modèle
+          d'embedding, permettant des stratégies de recherche hybrides
+          mêlant signaux par mots-clés et signaux sémantiques.
+\end{enumerate}
+
+Le compromis est le coût d'exécution : le modèle multilingue à 12
+couches est environ $2\times$ plus lent que le modèle anglais à 6
+couches sur CPU. Pour les applications sensibles à la latence,
+l'inférence GPU (\texttt{device="cuda"}) ou le modèle plus léger
+\texttt{distiluse-base-multilingual-cased-v2} (512 dimensions) peuvent
+être préférables.
+
+%% ════════════════════════════════════════════════════════════════════════════
+\section{Résumé et lectures complémentaires}
+\label{sec:conclusion}
+%% ════════════════════════════════════════════════════════════════════════════
+
+Cet article a retracé le cycle de vie complet d'un document dans
+ChromaDB :
+\begin{enumerate}
+    \item Le texte brut est \textbf{tokenisé} en sous-tokens WordPiece.
+    \item Les tokens passent par un \textbf{transformeur BERT à 6
+          couches} exécuté dans ONNX Runtime, produisant des états cachés
+          de 384 dimensions pour chaque position de token.
+    \item Les états cachés sont agrégés par \textbf{mean pooling}
+          (pondéré par le masque d'attention) pour condenser la séquence
+          en un seul vecteur.
+    \item Le vecteur est \textbf{normalisé L2} à longueur unitaire.
+    \item Le vecteur unitaire est inséré dans un \textbf{graphe HNSW}
+          qui supporte des requêtes approximatives de plus proches
+          voisins en $O(\log N)$ par distance cosinus.
+\end{enumerate}
+
+Nous avons également montré que le modèle anglais par défaut peut être
+remplacé par un \textbf{encodeur de phrases multilingue} \newline
+(\texttt{paraphrase-multilingual-MiniLM-L12-v2}) via \newline
+\texttt{SentenceTransformerEmbeddingFunction}, permettant la recherche
+sémantique en français et la \textbf{recherche interlingue} où des
+requêtes en anglais retrouvent correctement des documents français ---
+sans aucun pipeline de traduction.
+
+Pour approfondir, nous recommandons :
+\begin{itemize}
+    \item La documentation Sentence-Transformers\footnote{%
+          \url{https://www.sbert.net}} pour entraîner des modèles
+          d'embedding personnalisés.
+    \item L'article HNSW~\cite{malkov2018hnsw} pour les garanties
+          théoriques de l'index.
+    \item La documentation ChromaDB\footnote{%
+          \url{https://docs.trychroma.com}} pour les patrons de
+          déploiement en production (stockage persistant,
+          authentification, mode distribué).
+\end{itemize}
+
+%% ════════════════════════════════════════════════════════════════════════════
+%% Références
+%% ════════════════════════════════════════════════════════════════════════════
+\newpage
+\nocite{*}  
+\begin{thebibliography}{9}
+
+\bibitem{lewis2020rag}
+P.~Lewis, E.~Perez, A.~Piktus, F.~Petroni, V.~Karpukhin, N.~Goyal,
+H.~K\"uttler, M.~Lewis, W.~Yih, T.~Rockt\"aschel, S.~Riedel et
+D.~Kiela, « Retrieval-augmented generation for knowledge-intensive NLP
+tasks », dans \emph{Advances in Neural Information Processing Systems
+(NeurIPS)}, vol.~33, 2020, p.~9459--9474. arXiv:2005.11401. 
+[En ligne]. Disponible : \url{https://arxiv.org/abs/2005.11401}
+
+\bibitem{wang2020minilm}
+W.~Wang, F.~Wei, L.~Dong, H.~Bao, N.~Yang et M.~Zhou, « MiniLM:
+Deep self-attention distillation for task-agnostic compression of
+pre-trained transformers », dans \emph{Advances in Neural Information
+Processing Systems}, H.~Larochelle, M.~Ranzato, R.~Hadsell, 
+M.-F.~Balcan et H.~Lin, Éd. Curran Associates, Inc., vol.~33, 2020, 
+p.~5776--5788. Disponible : 
+\url{https://arxiv.org/abs/2002.10957}
+
+\bibitem{malkov2018hnsw}
+Y.~A. Malkov et D.~A. Yashunin, « Efficient and robust approximate
+nearest neighbor search using Hierarchical Navigable Small World
+graphs », \emph{IEEE Transactions on Pattern Analysis and Machine
+Intelligence}, vol.~42, n\textsuperscript{o}~4, p.~824--836, 2020.
+doi: 10.1109/TPAMI.2018.2889473. arXiv:1603.09320. 
+[En ligne]. Disponible : \url{https://arxiv.org/abs/1603.09320}
+
+\bibitem{devlin2019bert}
+J.~Devlin, M.-W. Chang, K.~Lee et K.~Toutanova, « BERT: Pre-training
+of deep bidirectional transformers for language understanding », dans
+\emph{Proceedings of the 2019 Conference of the North American Chapter 
+of the Association for Computational Linguistics: Human Language 
+Technologies (NAACL-HLT)}, vol.~1, 2019, p.~4171--4186. 
+arXiv:1810.04805. [En ligne]. Disponible : 
+\url{https://aclanthology.org/N19-1423/}
+
+\bibitem{reimers2019sbert}
+N.~Reimers et I.~Gurevych, « Sentence-BERT: Sentence embeddings using
+Siamese BERT-networks », dans \emph{Proceedings of the 2019 Conference 
+on Empirical Methods in Natural Language Processing and the 9th 
+International Joint Conference on Natural Language Processing 
+(EMNLP-IJCNLP)}, 2019, p.~3982--3992. arXiv:1908.10084. 
+[En ligne]. Disponible : \url{https://aclanthology.org/D19-1410/}
+
+\bibitem{chromadb2023}
+J.~Lovejoy, A.~Sanchez et al., « Chroma: The AI-native 
+open-source embedding database », Logiciel open-source, 
+2023. [En ligne]. Disponible : \url{https://www.trychroma.com}
+
+\bibitem{onnxruntime2024}
+Microsoft, « ONNX Runtime: Cross-platform, high performance 
+ML inferencing and training accelerator », Version 1.16, 2024. 
+[En ligne]. Disponible : 
+\url{https://github.com/microsoft/onnxruntime}
+
+\bibitem{huggingface2020tokenizers}
+A.~Moi et al., « Tokenizers: Fast state-of-the-art 
+tokenizers for modern NLP pipelines », Hugging Face, 2020. 
+[En ligne]. Disponible : 
+\url{https://github.com/huggingface/tokenizers}
+
+\bibitem{reimers2019sentencetransformers}
+N.~Reimers et I.~Gurevych, « Sentence-Transformers: Python 
+framework for state-of-the-art sentence, text and image 
+embeddings », 2019. [En ligne]. Disponible : 
+\url{https://www.sbert.net}
+
+\end{thebibliography}
+
+\end{document}
