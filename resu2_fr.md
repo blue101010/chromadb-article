@@ -1,3 +1,5 @@
+# Results Example 2 based on french polices.txt
+
  python main_fr_polices.py 
 ======================================================================
   ChromaDB — Polices e-commerce en français
@@ -8,11 +10,11 @@
       (premier lancement : téléchargement ~470 Mo, patience...)
 
 Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Loading weights: 100%|███████████████████████████████████████████████████████████| 199/199 [00:00<00:00, 3782.85it/s, Materializing param=pooler.dense.weight]
+Loading weights: 100%|| 199/199 [00:00<00:00, 3782.85it/s, Materializing param=pooler.dense.weight]
 BertModel LOAD REPORT from: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-Key                     | Status     |  | 
-------------------------+------------+--+-
-embeddings.position_ids | UNEXPECTED |  | 
+Key                     | Status     |  |
+------------------------+------------+--+
+embeddings.position_ids | UNEXPECTED |  |
 
 Notes:
 - UNEXPECTED    :can be ignored when loading from different task/architecture; not ok if you expect identical arch.
@@ -327,6 +329,3 @@ Notes:
   Indexation          : 0.3s
   Langue des docs    : français
   Requêtes testées   : 7 FR + 3 EN (cross-lingue)
-======================================================================
-
-(.venv) (.venv)
